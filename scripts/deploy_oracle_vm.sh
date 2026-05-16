@@ -62,7 +62,40 @@ exclude_repo_relative_path() {
     esac
 }
 
+resolve_unit_working_directory() {
+    local unit_file="$1"
+
+    awk -F= '/^WorkingDirectory=/{print $2; exit}' "$unit_file"
+}
+
+validate_deploy_target() {
+    local unit_file="$1"
+    local resolved_remote_dir="$2"
+    local resolved_service_name="$3"
+    local expected_remote_dir=""
+    local expected_service_name=""
+
+    if [[ ! -f "$unit_file" ]]; then
+        echo "No existe la unidad systemd esperada: $unit_file" >&2
+        exit 1
+    fi
+
+    expected_service_name="$(basename "$unit_file" .service)"
+    expected_remote_dir="$(resolve_unit_working_directory "$unit_file")"
+
+    if [[ "$resolved_service_name" != "$expected_service_name" ]]; then
+        echo "Configuracion invalida: este repo instala ${expected_service_name}.service, pero se resolvio ${resolved_service_name}.service. Corrige $deploy_env_file o usa --service $expected_service_name." >&2
+        exit 1
+    fi
+
+    if [[ -n "$expected_remote_dir" ]] && [[ "$resolved_remote_dir" != "$expected_remote_dir" ]]; then
+        echo "Configuracion invalida: este repo espera remote_dir=$expected_remote_dir segun $unit_file, pero se resolvio $resolved_remote_dir. Corrige $deploy_env_file o usa --remote-dir $expected_remote_dir." >&2
+        exit 1
+    fi
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+unit_file="$repo_root/systemd/polymarket-insider-finder.service"
 deploy_env_file="$repo_root/config/deploy.env"
 cli_remote_host=""
 cli_ssh_key_path=""
@@ -120,6 +153,8 @@ remote_host="${cli_remote_host:-${POLYMARKET_DEPLOY_HOST:-}}"
 ssh_key_path="${cli_ssh_key_path:-${POLYMARKET_DEPLOY_SSH_KEY:-}}"
 remote_dir="${cli_remote_dir:-${POLYMARKET_DEPLOY_REMOTE_DIR:-/home/ubuntu/polymarket_insider_finder}}"
 service_name="${cli_service_name:-${POLYMARKET_DEPLOY_SERVICE:-polymarket-insider-finder}}"
+
+validate_deploy_target "$unit_file" "$remote_dir" "$service_name"
 
 if [[ -z "$remote_host" ]]; then
     echo "Falta configurar POLYMARKET_DEPLOY_HOST en $deploy_env_file o pasar --host." >&2
@@ -191,7 +226,7 @@ remote_dir="$1"
 service_name="$2"
 
 cd "$remote_dir"
-sudo install -m 644 systemd/polymarket-insider-finder.service "/etc/systemd/system/${service_name}.service"
+sudo install -m 644 systemd/$(basename "$service_name").service "/etc/systemd/system/${service_name}.service"
 sudo systemctl daemon-reload
 sudo systemctl restart "$service_name"
 sudo systemctl status "$service_name" --no-pager --lines=20
