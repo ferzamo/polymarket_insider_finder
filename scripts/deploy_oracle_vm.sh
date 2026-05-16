@@ -184,7 +184,7 @@ if [[ "$sync_only" -eq 1 ]]; then
 fi
 
 echo "==> Reinstalando unidad systemd y reiniciando $service_name"
-ssh -tt "${ssh_options[@]}" "$remote_host" bash -se -- "$remote_dir" "$service_name" <<'REMOTE'
+ssh -T "${ssh_options[@]}" "$remote_host" bash -se -- "$remote_dir" "$service_name" <<'REMOTE'
 set -euo pipefail
 
 remote_dir="$1"
