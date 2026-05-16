@@ -14,9 +14,11 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -84,6 +86,11 @@ HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; PolymarketInsiderFinder/2.0)",
     "Accept": "application/json",
 }
+HTTP_RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+HTTP_MAX_ATTEMPTS = 4
+HTTP_RETRY_BACKOFF_SECONDS = 5.0
+HTTP_RETRY_BACKOFF_CAP_SECONDS = 60.0
+PAGE_REQUEST_DELAY_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -391,15 +398,60 @@ def configure_logger(args: argparse.Namespace, log_file_path: Path) -> logging.L
     return logger
 
 
+def parse_retry_after_seconds(header_value: str | None) -> float | None:
+    if not header_value:
+        return None
+
+    try:
+        return max(0.0, float(header_value))
+    except ValueError:
+        pass
+
+    try:
+        retry_at = parsedate_to_datetime(header_value)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+
+    return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+
+
+def calculate_retry_delay(attempt_index: int, retry_after_header: str | None) -> float:
+    retry_after_seconds = parse_retry_after_seconds(retry_after_header)
+    if retry_after_seconds is not None:
+        return retry_after_seconds
+
+    return min(HTTP_RETRY_BACKOFF_CAP_SECONDS, HTTP_RETRY_BACKOFF_SECONDS * (2**attempt_index))
+
+
 def fetch_json(url: str, params: dict[str, Any] | None = None) -> Any:
     if params:
         query = urlencode({key: value for key, value in params.items() if value is not None})
         request_url = f"{url}?{query}"
     else:
         request_url = url
-    request = Request(request_url, headers=HTTP_HEADERS)
-    with urlopen(request, timeout=30) as response:
-        return json.load(response)
+
+    logger = logging.getLogger("polymarket_insider_finder")
+    for attempt_index in range(HTTP_MAX_ATTEMPTS):
+        request = Request(request_url, headers=HTTP_HEADERS)
+        try:
+            with urlopen(request, timeout=30) as response:
+                return json.load(response)
+        except HTTPError as exc:
+            if exc.code not in HTTP_RETRY_STATUS_CODES or attempt_index + 1 >= HTTP_MAX_ATTEMPTS:
+                raise
+
+            delay_seconds = calculate_retry_delay(attempt_index, exc.headers.get("Retry-After") if exc.headers else None)
+            logger.warning(
+                "Gamma devolvio HTTP %s. Reintentando en %.1fs (%s/%s).",
+                exc.code,
+                delay_seconds,
+                attempt_index + 1,
+                HTTP_MAX_ATTEMPTS - 1,
+            )
+            time.sleep(delay_seconds)
 
 
 def post_form_json(url: str, data: dict[str, Any]) -> Any:
@@ -433,6 +485,7 @@ def iter_active_markets(limit: int, max_pages: int) -> list[dict[str, Any]]:
             break
         if max_pages and pages >= max_pages:
             break
+        time.sleep(PAGE_REQUEST_DELAY_SECONDS)
 
     return markets
 

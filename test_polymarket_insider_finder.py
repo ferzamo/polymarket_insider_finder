@@ -1,8 +1,13 @@
 import argparse
+import io
 import sqlite3
 import tempfile
 import unittest
+from email.message import Message
 from pathlib import Path
+from unittest.mock import MagicMock
+from unittest.mock import patch
+from urllib.error import HTTPError
 
 from polymarket_insider_finder import DEFAULT_RULES
 from polymarket_insider_finder import EventSnapshotRecord
@@ -12,6 +17,7 @@ from polymarket_insider_finder import MarketSnapshotRecord
 from polymarket_insider_finder import Signal
 from polymarket_insider_finder import detect_signals
 from polymarket_insider_finder import ensure_db
+from polymarket_insider_finder import fetch_json
 from polymarket_insider_finder import hydrate_telegram_credentials
 from polymarket_insider_finder import load_simple_env_file
 from polymarket_insider_finder import parse_yes_no_prices
@@ -62,6 +68,47 @@ class ParsePricesTests(unittest.TestCase):
 
         self.assertEqual(args.telegram_bot_token, "token-from-file")
         self.assertEqual(args.telegram_chat_id, "chat-from-file")
+
+
+class HttpRetryTests(unittest.TestCase):
+    def test_fetch_json_retries_after_http_429(self) -> None:
+        headers = Message()
+        headers["Retry-After"] = "7"
+        rate_limited_error = HTTPError(
+            url="https://example.com",
+            code=429,
+            msg="Too Many Requests",
+            hdrs=headers,
+            fp=None,
+        )
+        successful_response = MagicMock()
+        successful_response.__enter__.return_value = io.StringIO('{"ok": true}')
+        successful_response.__exit__.return_value = False
+
+        with patch("polymarket_insider_finder.urlopen", side_effect=[rate_limited_error, successful_response]) as mock_urlopen:
+            with patch("polymarket_insider_finder.time.sleep") as mock_sleep:
+                payload = fetch_json("https://example.com")
+
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(mock_urlopen.call_count, 2)
+        mock_sleep.assert_called_once_with(7.0)
+
+    def test_fetch_json_does_not_retry_non_retryable_http_errors(self) -> None:
+        not_found_error = HTTPError(
+            url="https://example.com",
+            code=404,
+            msg="Not Found",
+            hdrs=Message(),
+            fp=None,
+        )
+
+        with patch("polymarket_insider_finder.urlopen", side_effect=not_found_error) as mock_urlopen:
+            with patch("polymarket_insider_finder.time.sleep") as mock_sleep:
+                with self.assertRaises(HTTPError):
+                    fetch_json("https://example.com")
+
+        self.assertEqual(mock_urlopen.call_count, 1)
+        mock_sleep.assert_not_called()
 
 
 class SignalTests(unittest.TestCase):
