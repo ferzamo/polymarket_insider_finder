@@ -12,9 +12,10 @@ No prueba insider trading. Solo marca anomalías que merecen revisión manual.
 1. Lee los mercados activos desde la API pública de Gamma.
 2. Se queda solo con mercados binarios `Yes/No`.
 3. Guarda snapshots en SQLite para comparar cada iteración con la anterior.
-4. Aplica perfiles distintos por `feeType` y por banda de liquidez para ajustar sensibilidad.
-5. Agrupa por evento porque el `openInterest` público de Gamma viene a nivel de evento, no de pregunta individual.
-6. Dentro de cada evento, selecciona la pregunta binaria con el mayor movimiento de precio para representar la señal.
+4. Excluye los mercados deportivos identificados como `sports_fees_v2`, para que no generen señales ni alertas.
+5. Aplica perfiles distintos por `feeType` y por banda de liquidez para ajustar sensibilidad.
+6. Agrupa por evento porque el `openInterest` público de Gamma viene a nivel de evento, no de pregunta individual.
+7. Dentro de cada evento, selecciona la pregunta binaria con el mayor movimiento de precio para representar la señal.
 
 ## Recomendación de frecuencia
 
@@ -157,7 +158,7 @@ La unidad incluida asume Ubuntu y el repo en `/home/ubuntu/polymarket_insider_fi
 
 Esos valores son la base global. Encima de eso el script puede endurecer o relajar umbrales según:
 
-- `feeType`, como `general_fees`, `culture_fees` o `sports_fees_v2`
+- `feeType`, como `general_fees` o `culture_fees`
 - bandas de liquidez, para no tratar igual un mercado de `$4K` y uno de `$400K`
 
 La configuración vive en `config/signal_rules.json`.
@@ -201,4 +202,4 @@ El mismo SQLite también guarda el historial de alertas enviadas para no repetir
 
 La API pública de Gamma expone `openInterest` en el objeto `event`. Eso significa que, en eventos con varias preguntas, la señal de capital fresco se detecta a nivel del evento y luego se asocia a la pregunta binaria con mayor desplazamiento de precio. Es una aproximación útil, pero no una prueba forense por mercado.
 
-Además, Gamma no expone una categoría de mercado limpia y consistente en estos endpoints públicos, así que el ajuste por "categoría" se hace usando `feeType` como proxy operativo.
+Además, Gamma no expone una categoría de mercado limpia y consistente en estos endpoints públicos, así que el ajuste por "categoría" se hace usando `feeType` como proxy operativo. Por eso los mercados con `feeType` `sports_fees_v2` se excluyen por completo del análisis.

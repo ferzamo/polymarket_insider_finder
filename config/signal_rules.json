@@ -14,11 +14,6 @@
       "min_oi_abs": 4500.0,
       "min_oi_pct": 0.04,
       "min_price_move": 0.06
-    },
-    "sports_fees_v2": {
-      "min_oi_abs": 9000.0,
-      "min_oi_pct": 0.055,
-      "min_price_move": 0.09
     }
   },
   "liquidity_bands": [

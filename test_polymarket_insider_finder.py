@@ -15,6 +15,7 @@ from polymarket_insider_finder import EventState
 from polymarket_insider_finder import MarketSnapshot
 from polymarket_insider_finder import MarketSnapshotRecord
 from polymarket_insider_finder import Signal
+from polymarket_insider_finder import build_event_states
 from polymarket_insider_finder import detect_signals
 from polymarket_insider_finder import ensure_db
 from polymarket_insider_finder import fetch_json
@@ -183,7 +184,7 @@ class SignalTests(unittest.TestCase):
             liquidity=150000.0,
             volume_24h=3000.0,
             event_open_interest=200000.0,
-            fee_type="sports_fees_v2",
+            fee_type="general_fees",
             fetched_at=200,
         )
 
@@ -192,8 +193,61 @@ class SignalTests(unittest.TestCase):
         self.assertEqual(thresholds.min_oi_abs, 15000.0)
         self.assertEqual(thresholds.min_oi_pct, 0.025)
         self.assertEqual(thresholds.min_price_move, 0.04)
-        self.assertIn("sports_fees_v2", thresholds.profile_name)
+        self.assertIn("general_fees", thresholds.profile_name)
         self.assertIn("liq:deep", thresholds.profile_name)
+
+    def test_build_event_states_excludes_sports_fee_type(self) -> None:
+        raw_markets = [
+            {
+                "id": "sports-market",
+                "question": "Will Team A win?",
+                "slug": "team-a-win",
+                "conditionId": "cond-sports",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.51", "0.49"]',
+                "liquidityNum": 5000,
+                "volume24hr": 1500,
+                "feeType": "sports_fees_v2",
+                "events": [
+                    {
+                        "id": "sports-event",
+                        "title": "Sports Event",
+                        "slug": "sports-event",
+                        "openInterest": 25000,
+                    }
+                ],
+            },
+            {
+                "id": "news-market",
+                "question": "Will Candidate X win?",
+                "slug": "candidate-x-win",
+                "conditionId": "cond-news",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.64", "0.36"]',
+                "liquidityNum": 5000,
+                "volume24hr": 1500,
+                "feeType": "general_fees",
+                "events": [
+                    {
+                        "id": "news-event",
+                        "title": "Election",
+                        "slug": "election",
+                        "openInterest": 40000,
+                    }
+                ],
+            },
+        ]
+
+        events, binary_market_count = build_event_states(
+            raw_markets=raw_markets,
+            fetched_at=200,
+            min_liquidity=0.0,
+            min_volume_24h=0.0,
+        )
+
+        self.assertEqual(binary_market_count, 1)
+        self.assertEqual(set(events), {"news-event"})
+        self.assertEqual(events["news-event"].markets[0].market_id, "news-market")
 
     def test_alert_cooldown_deduplicates_market_direction(self) -> None:
         connection = sqlite3.connect(":memory:")

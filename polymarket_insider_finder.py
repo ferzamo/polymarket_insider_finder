@@ -29,6 +29,7 @@ DEFAULT_RULES_PATH = Path("config/signal_rules.json")
 DEFAULT_TELEGRAM_ENV_PATH = Path("config/telegram.env")
 DEFAULT_LOG_PATH = Path("logs/polymarket_insider_finder.log")
 DEFAULT_LAUNCHD_PLIST_PATH = Path("launchd/com.fernandozamora.polymarket-insider-finder.plist")
+EXCLUDED_FEE_TYPES = frozenset({"sports_fees_v2"})
 DEFAULT_RULES = {
     "defaults": {
         "min_oi_abs": 5000.0,
@@ -45,11 +46,6 @@ DEFAULT_RULES = {
             "min_oi_abs": 4500.0,
             "min_oi_pct": 0.04,
             "min_price_move": 0.06,
-        },
-        "sports_fees_v2": {
-            "min_oi_abs": 9000.0,
-            "min_oi_pct": 0.055,
-            "min_price_move": 0.09,
         },
     },
     "liquidity_bands": [
@@ -563,7 +559,7 @@ def extract_market_snapshot(raw_market: dict[str, Any], fetched_at: int) -> Mark
         liquidity=safe_float(raw_market.get("liquidityNum") or raw_market.get("liquidity")),
         volume_24h=safe_float(raw_market.get("volume24hr") or raw_market.get("volume24hrClob")),
         event_open_interest=safe_float(event.get("openInterest")),
-        fee_type=str(raw_market.get("feeType") or "unknown"),
+        fee_type=str(raw_market.get("feeType") or "unknown").strip().lower(),
         fetched_at=fetched_at,
     )
 
@@ -580,6 +576,8 @@ def build_event_states(
     for raw_market in raw_markets:
         snapshot = extract_market_snapshot(raw_market, fetched_at)
         if snapshot is None:
+            continue
+        if snapshot.fee_type in EXCLUDED_FEE_TYPES:
             continue
         if snapshot.liquidity < min_liquidity:
             continue
