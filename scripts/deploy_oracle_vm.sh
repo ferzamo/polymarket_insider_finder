@@ -9,6 +9,7 @@ Uso: ./scripts/deploy_oracle_vm.sh [opciones]
 Sincroniza este repo hacia la VM de Oracle por SSH usando rsync,
 sin necesidad de hacer push/pull en Git, y reinicia el servicio remoto.
 Carga defaults desde config/deploy.env si existe.
+El sync elimina archivos remotos obsoletos del repo, pero preserva rutas excluidas.
 
 Opciones:
   --env-file <ruta>       Archivo .env para cargar la config del despliegue.
@@ -186,6 +187,7 @@ rsync_args=(
     -az
     --human-readable
     --itemize-changes
+    --delete
     --exclude=.git/
     --exclude=__pycache__/
     --exclude=.DS_Store
