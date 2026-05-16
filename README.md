@@ -70,6 +70,8 @@ python3 polymarket_insider_finder.py --telegram --telegram-test-message "Prueba 
 
 Si tienes las credenciales guardadas en `config/telegram.env`, el programa las carga automáticamente. No hace falta exportarlas a mano para uso normal.
 
+Ese archivo está ignorado por Git, así que puedes guardar ahí secretos locales como el bot token y el chat ID sin subirlos al repo.
+
 ## Despliegue en Oracle Cloud Free
 
 La forma más simple de dejar este monitor en la nube sin tocar el código es una VM Ubuntu Always Free con `systemd`.
@@ -138,12 +140,36 @@ journalctl -u polymarket-insider-finder -f
 tail -f /home/ubuntu/polymarket_insider_finder/logs/polymarket_insider_finder.log
 ```
 
-9. Para actualizar el monitor después de un cambio:
+9. Para actualizar el monitor después de un cambio si la VM tira de Git:
 
 ```bash
 cd /home/ubuntu/polymarket_insider_finder
 git pull
 sudo systemctl restart polymarket-insider-finder
+```
+
+Si no quieres subir nada a Git para desplegar cambios, puedes sincronizar tu carpeta local directo a la VM con el helper incluido en este repo:
+
+```bash
+cp config/deploy.env.example config/deploy.env
+./scripts/deploy_oracle_vm.sh
+```
+
+Ese script:
+
+- copia el repo actual por `rsync` sobre SSH
+- carga `host`, llave SSH, ruta remota y nombre del servicio desde `config/deploy.env`
+- no toca `.git/`, `data/`, `logs/` ni `config/telegram.env`
+- no sube `config/deploy.env` ni tu llave privada al remoto
+- reinstala la unidad `systemd` del repo y reinicia `polymarket-insider-finder`
+
+Opciones útiles:
+
+```bash
+./scripts/deploy_oracle_vm.sh --dry-run
+./scripts/deploy_oracle_vm.sh --sync-only
+./scripts/deploy_oracle_vm.sh --env-file ./config/deploy.env
+./scripts/deploy_oracle_vm.sh --host ubuntu@IP_PUBLICA --key ./ssh-key-2026-05-16.key
 ```
 
 La unidad incluida asume Ubuntu y el repo en `/home/ubuntu/polymarket_insider_finder`. Si usas otro usuario o ruta, edita `systemd/polymarket-insider-finder.service` antes de copiarlo a `/etc/systemd/system/`.
@@ -176,6 +202,8 @@ Puedes guardarlos en `config/telegram.env` así:
 POLYMARKET_TELEGRAM_BOT_TOKEN=tu_token
 POLYMARKET_TELEGRAM_CHAT_ID=tu_chat_id
 ```
+
+`config/telegram.env` no se sube a Git.
 
 El sistema deduplica alertas por mercado y dirección (`YES` o `NO`) usando un cooldown configurable con `--notification-cooldown`.
 

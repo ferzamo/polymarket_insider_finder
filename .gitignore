@@ -1,4 +1,5 @@
 data/
 logs/
+config/deploy.env
 config/telegram.env
 ssh-key-2026-05-16.key
