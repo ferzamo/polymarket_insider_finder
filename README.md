@@ -69,6 +69,84 @@ python3 polymarket_insider_finder.py --telegram --telegram-test-message "Prueba 
 
 Si tienes las credenciales guardadas en `config/telegram.env`, el programa las carga automáticamente. No hace falta exportarlas a mano para uso normal.
 
+## Despliegue en Oracle Cloud Free
+
+La forma más simple de dejar este monitor en la nube sin tocar el código es una VM Ubuntu Always Free con `systemd`.
+
+1. Crea una instancia `Always Free` en Oracle Cloud con imagen Ubuntu, IP pública y acceso SSH.
+2. Si hay capacidad, prioriza una Ampere A1 Flex. Si no, una AMD micro también sirve.
+3. Conéctate por SSH e instala lo mínimo:
+
+```bash
+sudo apt update
+sudo apt install -y git python3
+```
+
+El script usa solo librerías estándar de Python, así que no hace falta instalar dependencias con `pip`.
+
+4. Lleva el repo a la VM en `/home/ubuntu/polymarket_insider_finder`.
+
+Si el repo está en GitHub o en otro remoto accesible:
+
+```bash
+cd /home/ubuntu
+git clone <URL_DEL_REPO> polymarket_insider_finder
+cd polymarket_insider_finder
+```
+
+Si todavía no lo has subido a un remoto, cópialo desde tu portátil:
+
+```bash
+scp -r ./polymarket_insider_finder ubuntu@IP_PUBLICA:/home/ubuntu/
+```
+
+5. Prepara carpetas y credenciales:
+
+```bash
+cd /home/ubuntu/polymarket_insider_finder
+mkdir -p data logs
+cp config/telegram.env.example config/telegram.env
+nano config/telegram.env
+```
+
+6. Valida que todo arranca bien antes de instalar el servicio:
+
+```bash
+cd /home/ubuntu/polymarket_insider_finder
+python3 -m unittest -v
+python3 polymarket_insider_finder.py --telegram --telegram-test-message "Prueba Oracle"
+python3 polymarket_insider_finder.py
+```
+
+La primera ejecución normal solo guarda baseline. La segunda pasada ya puede calcular deltas.
+
+7. Instala la unidad `systemd` incluida en este repo:
+
+```bash
+cd /home/ubuntu/polymarket_insider_finder
+sudo install -m 644 systemd/polymarket-insider-finder.service /etc/systemd/system/polymarket-insider-finder.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now polymarket-insider-finder
+sudo systemctl status polymarket-insider-finder
+```
+
+8. Revisa los logs del servicio:
+
+```bash
+journalctl -u polymarket-insider-finder -f
+tail -f /home/ubuntu/polymarket_insider_finder/logs/polymarket_insider_finder.log
+```
+
+9. Para actualizar el monitor después de un cambio:
+
+```bash
+cd /home/ubuntu/polymarket_insider_finder
+git pull
+sudo systemctl restart polymarket-insider-finder
+```
+
+La unidad incluida asume Ubuntu y el repo en `/home/ubuntu/polymarket_insider_finder`. Si usas otro usuario o ruta, edita `systemd/polymarket-insider-finder.service` antes de copiarlo a `/etc/systemd/system/`.
+
 ## Umbrales por defecto
 
 - `--min-oi-abs 5000`
@@ -104,6 +182,7 @@ El sistema deduplica alertas por mercado y dirección (`YES` o `NO`) usando un c
 
 - El modo `--service` activa `watch` y escribe logs con rotación en `logs/polymarket_insider_finder.log`.
 - El `plist` generado queda por defecto en `launchd/com.fernandozamora.polymarket-insider-finder.plist`.
+- En Linux puedes usar la unidad `systemd/polymarket-insider-finder.service` incluida en este repo.
 - El servicio se mantiene vivo y el propio proceso hace un sondeo cada `--interval` segundos. Con la configuración actual, la frecuencia es de `60` segundos.
 - Si usas `config/telegram.env`, `launchd` no necesita `launchctl setenv`; el script lo lee directamente al arrancar.
 - Para pararlo de verdad no basta con matar el proceso, porque `KeepAlive` lo levantaría otra vez. Hay que descargar el agente con `launchctl bootout`.

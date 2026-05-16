@@ -1,0 +1,16 @@
+[Unit]
+Description=Polymarket Insider Finder
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket_insider_finder
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/ubuntu/polymarket_insider_finder/polymarket_insider_finder.py --service --telegram --telegram-env-file /home/ubuntu/polymarket_insider_finder/config/telegram.env --interval 60 --top 10 --limit-per-page 100 --db-path /home/ubuntu/polymarket_insider_finder/data/polymarket_insider.sqlite3 --rules-file /home/ubuntu/polymarket_insider_finder/config/signal_rules.json --log-file /home/ubuntu/polymarket_insider_finder/logs/polymarket_insider_finder.log --notify-top 3 --notification-cooldown 1800 --min-liquidity 2000 --min-volume-24h 250 --min-oi-abs 5000 --min-oi-pct 0.04 --min-price-move 0.06
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
