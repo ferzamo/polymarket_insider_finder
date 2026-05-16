@@ -1,0 +1,53 @@
+{
+  "defaults": {
+    "min_oi_abs": 5000.0,
+    "min_oi_pct": 0.04,
+    "min_price_move": 0.06
+  },
+  "fee_type_profiles": {
+    "general_fees": {
+      "min_oi_abs": 6000.0,
+      "min_oi_pct": 0.045,
+      "min_price_move": 0.065
+    },
+    "culture_fees": {
+      "min_oi_abs": 4500.0,
+      "min_oi_pct": 0.04,
+      "min_price_move": 0.06
+    },
+    "sports_fees_v2": {
+      "min_oi_abs": 9000.0,
+      "min_oi_pct": 0.055,
+      "min_price_move": 0.09
+    }
+  },
+  "liquidity_bands": [
+    {
+      "name": "deep",
+      "min_liquidity": 100000.0,
+      "thresholds": {
+        "min_oi_abs": 15000.0,
+        "min_oi_pct": 0.025,
+        "min_price_move": 0.04
+      }
+    },
+    {
+      "name": "mid",
+      "min_liquidity": 10000.0,
+      "thresholds": {
+        "min_oi_abs": 8000.0,
+        "min_oi_pct": 0.04,
+        "min_price_move": 0.055
+      }
+    },
+    {
+      "name": "thin",
+      "min_liquidity": 0.0,
+      "thresholds": {
+        "min_oi_abs": 5000.0,
+        "min_oi_pct": 0.06,
+        "min_price_move": 0.09
+      }
+    }
+  ]
+}
