@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from html import escape as html_escape
 import json
 import logging
 import math
@@ -1096,25 +1097,31 @@ def market_url(signal: Signal) -> str:
 
 def build_telegram_digest(signals: list[Signal]) -> str:
     lines = [
-        "Polymarket Insider Finder",
-        format_timestamp(signals[0].fetched_at),
-        f"Señales nuevas: {len(signals)}",
+        "<b>Polymarket Insider Finder</b>",
+        f"<b>Actualizado:</b> <code>{html_escape(format_timestamp(signals[0].fetched_at))}</code>",
+        f"<b>Señales nuevas:</b> {len(signals)}",
         "",
     ]
     for index, signal in enumerate(signals, start=1):
-        lines.append(f"{index}. {signal.question}")
-        lines.append(f"Evento: {signal.event_title}")
+        oi_delta_abs = format_money(signal.oi_delta_abs)
+        if signal.oi_delta_abs > 0:
+            oi_delta_abs = f"+{oi_delta_abs}"
+
+        lines.append(f"<b>{index}. {html_escape(signal.question)}</b>")
+        lines.append(f"<b>Evento:</b> {html_escape(signal.event_title)}")
         lines.append(
-            f"{signal.direction} {signal.previous_side_price:.3f} -> {signal.current_side_price:.3f} (+{signal.price_move:.3f})"
+            f"<b>Movimiento detectado:</b> {html_escape(signal.direction)} de {signal.previous_side_price:.3f} a {signal.current_side_price:.3f} ({signal.price_move:+.3f})"
         )
         lines.append(
-            f"OI {format_money(signal.current_open_interest)} ({format_money(signal.oi_delta_abs)}, {signal.oi_delta_pct:.1%})"
+            f"<b>Interes abierto:</b> {format_money(signal.current_open_interest)} | <b>Cambio:</b> {oi_delta_abs} ({signal.oi_delta_pct:+.1%})"
         )
         lines.append(
-            f"Liquidez {format_money(signal.market_liquidity)} | feeType {signal.market_fee_type} | intervalo {signal.interval_seconds}s"
+            f"<b>Liquidez:</b> {format_money(signal.market_liquidity)} | <b>Vol 24h:</b> {format_money(signal.market_volume_24h)}"
         )
-        lines.append(f"Perfil: {signal.threshold_profile_name}")
-        lines.append(market_url(signal))
+        lines.append(
+            f"<b>Perfil:</b> {html_escape(signal.threshold_profile_name)} | <b>Intervalo analizado:</b> {signal.interval_seconds}s"
+        )
+        lines.append(f"<a href=\"{html_escape(market_url(signal), quote=True)}\">Abrir mercado</a>")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -1125,6 +1132,7 @@ def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:
         {
             "chat_id": chat_id,
             "text": text,
+            "parse_mode": "HTML",
             "disable_web_page_preview": "true",
         },
     )
@@ -1277,7 +1285,7 @@ def write_launchd_plist(
 def send_telegram_test_message(args: argparse.Namespace) -> int:
     if not args.telegram_bot_token or not args.telegram_chat_id:
         raise ValueError("Faltan credenciales de Telegram para enviar el mensaje de prueba.")
-    send_telegram_message(args.telegram_bot_token, args.telegram_chat_id, args.telegram_test_message)
+    send_telegram_message(args.telegram_bot_token, args.telegram_chat_id, html_escape(args.telegram_test_message))
     return 0
 
 

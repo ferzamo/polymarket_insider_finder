@@ -15,6 +15,7 @@ from polymarket_insider_finder import EventState
 from polymarket_insider_finder import MarketSnapshot
 from polymarket_insider_finder import MarketSnapshotRecord
 from polymarket_insider_finder import Signal
+from polymarket_insider_finder import build_telegram_digest
 from polymarket_insider_finder import build_event_states
 from polymarket_insider_finder import detect_signals
 from polymarket_insider_finder import ensure_db
@@ -26,6 +27,7 @@ from polymarket_insider_finder import persist_snapshots
 from polymarket_insider_finder import record_sent_alert
 from polymarket_insider_finder import resolve_thresholds
 from polymarket_insider_finder import run_cycle
+from polymarket_insider_finder import send_telegram_message
 from polymarket_insider_finder import should_send_alert
 
 
@@ -112,6 +114,55 @@ class HttpRetryTests(unittest.TestCase):
 
         self.assertEqual(mock_urlopen.call_count, 1)
         mock_sleep.assert_not_called()
+
+
+class TelegramDigestTests(unittest.TestCase):
+    def test_build_telegram_digest_uses_human_readable_labels(self) -> None:
+        signal = Signal(
+            event_id="event-1",
+            event_title="Election 2026",
+            event_slug="election-2026",
+            market_id="m-1",
+            question="Will Candidate X win?",
+            slug="candidate-x-win",
+            direction="YES",
+            previous_side_price=0.41,
+            current_side_price=0.57,
+            price_move=0.16,
+            previous_yes_price=0.41,
+            current_yes_price=0.57,
+            oi_delta_abs=12_000.0,
+            oi_delta_pct=0.188,
+            current_open_interest=76_000.0,
+            market_liquidity=15_000.0,
+            market_volume_24h=8_200.0,
+            market_fee_type="general_fees",
+            threshold_profile_name="general_fees/liquidity:deep",
+            interval_seconds=60,
+            strength=0.88,
+            fetched_at=1_747_483_200,
+        )
+
+        digest = build_telegram_digest([signal])
+
+        self.assertEqual(digest.splitlines()[0], "<b>Polymarket Insider Finder</b>")
+        self.assertIn("<b>Actualizado:</b> <code>2025-05-17 12:00:00 UTC</code>", digest)
+        self.assertIn("<b>1. Will Candidate X win?</b>", digest)
+        self.assertIn("<b>Evento:</b> Election 2026", digest)
+        self.assertIn("<b>Movimiento detectado:</b> YES de 0.410 a 0.570 (+0.160)", digest)
+        self.assertIn("<b>Interes abierto:</b> $76.0K | <b>Cambio:</b> +$12.0K (+18.8%)", digest)
+        self.assertIn("<b>Liquidez:</b> $15.0K | <b>Vol 24h:</b> $8.2K", digest)
+        self.assertIn("<b>Perfil:</b> general_fees/liquidity:deep | <b>Intervalo analizado:</b> 60s", digest)
+        self.assertIn('<a href="https://polymarket.com/event/election-2026">Abrir mercado</a>', digest)
+
+    def test_send_telegram_message_uses_html_parse_mode(self) -> None:
+        with patch("polymarket_insider_finder.post_form_json", return_value={"ok": True}) as mock_post:
+            send_telegram_message("bot-token", "chat-id", "<b>hola</b>")
+
+        self.assertEqual(mock_post.call_count, 1)
+        payload = mock_post.call_args.args[1]
+        self.assertEqual(payload["parse_mode"], "HTML")
+        self.assertEqual(payload["text"], "<b>hola</b>")
 
 
 class SignalTests(unittest.TestCase):
