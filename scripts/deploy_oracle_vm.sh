@@ -194,7 +194,6 @@ rsync_args=(
     --exclude=data/
     --exclude=logs/
     --exclude=config/deploy.env
-    --exclude=config/telegram.env
 )
 
 exclude_repo_relative_path "$deploy_env_file"
@@ -228,6 +227,18 @@ remote_dir="$1"
 service_name="$2"
 
 cd "$remote_dir"
+
+mkdir -p config
+
+env_path="config/telegram.env"
+example_path="${env_path}.example"
+
+if [[ -f "$env_path" ]]; then
+    chmod 600 "$env_path"
+elif [[ -f "$example_path" ]]; then
+    install -m 600 "$example_path" "$env_path"
+fi
+
 sudo install -m 644 systemd/$(basename "$service_name").service "/etc/systemd/system/${service_name}.service"
 sudo systemctl daemon-reload
 sudo systemctl restart "$service_name"
