@@ -29,6 +29,7 @@ DEFAULT_RULES_PATH = Path("config/signal_rules.json")
 DEFAULT_TELEGRAM_ENV_PATH = Path("config/telegram.env")
 DEFAULT_LOG_PATH = Path("logs/polymarket_insider_finder.log")
 DEFAULT_LAUNCHD_PLIST_PATH = Path("launchd/com.fernandozamora.polymarket-insider-finder.plist")
+DEFAULT_BASELINE_MIN_AGE_SECONDS = 300
 EXCLUDED_FEE_TYPES = frozenset({"sports_fees_v2"})
 DEFAULT_RULES = {
     "defaults": {
@@ -188,6 +189,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=60,
         help="Segundos entre sondeos en modo watch o service. Recomendado: 60.",
+    )
+    parser.add_argument(
+        "--baseline-min-age",
+        type=int,
+        default=DEFAULT_BASELINE_MIN_AGE_SECONDS,
+        help=(
+            "Edad mínima en segundos del baseline usado para comparar precio y open interest. "
+            "Si no existe un snapshot tan antiguo, se usa el último guardado."
+        ),
     )
     parser.add_argument(
         "--watch",
@@ -697,6 +707,89 @@ def load_latest_market_snapshots(connection: sqlite3.Connection) -> dict[str, Ma
     }
 
 
+def load_event_snapshots_at_or_before(
+    connection: sqlite3.Connection, cutoff_fetched_at: int
+) -> dict[str, EventSnapshotRecord]:
+    rows = connection.execute(
+        """
+        SELECT current.event_id, current.fetched_at, current.open_interest
+        FROM event_snapshots AS current
+        JOIN (
+            SELECT event_id, MAX(fetched_at) AS max_fetched_at
+            FROM event_snapshots
+            WHERE fetched_at <= ?
+            GROUP BY event_id
+        ) AS selected
+          ON selected.event_id = current.event_id
+         AND selected.max_fetched_at = current.fetched_at
+        """,
+        (cutoff_fetched_at,),
+    ).fetchall()
+    return {
+        row[0]: EventSnapshotRecord(event_id=row[0], fetched_at=row[1], open_interest=row[2])
+        for row in rows
+    }
+
+
+def load_market_snapshots_at_or_before(
+    connection: sqlite3.Connection, cutoff_fetched_at: int
+) -> dict[str, MarketSnapshotRecord]:
+    rows = connection.execute(
+        """
+        SELECT current.market_id, current.fetched_at, current.yes_price, current.no_price
+        FROM market_snapshots AS current
+        JOIN (
+            SELECT market_id, MAX(fetched_at) AS max_fetched_at
+            FROM market_snapshots
+            WHERE fetched_at <= ?
+            GROUP BY market_id
+        ) AS selected
+          ON selected.market_id = current.market_id
+         AND selected.max_fetched_at = current.fetched_at
+        """,
+        (cutoff_fetched_at,),
+    ).fetchall()
+    return {
+        row[0]: MarketSnapshotRecord(
+            market_id=row[0],
+            fetched_at=row[1],
+            yes_price=row[2],
+            no_price=row[3],
+        )
+        for row in rows
+    }
+
+
+def load_comparison_event_snapshots(
+    connection: sqlite3.Connection,
+    reference_fetched_at: int,
+    baseline_min_age: int,
+) -> dict[str, EventSnapshotRecord]:
+    latest_snapshots = load_latest_event_snapshots(connection)
+    if baseline_min_age <= 0:
+        return latest_snapshots
+
+    comparison_snapshots = load_event_snapshots_at_or_before(connection, reference_fetched_at - baseline_min_age)
+    for event_id, latest_snapshot in latest_snapshots.items():
+        comparison_snapshots.setdefault(event_id, latest_snapshot)
+    return comparison_snapshots
+
+
+def load_comparison_market_snapshots(
+    connection: sqlite3.Connection,
+    reference_fetched_at: int,
+    baseline_min_age: int,
+) -> dict[str, MarketSnapshotRecord]:
+    latest_snapshots = load_latest_market_snapshots(connection)
+    if baseline_min_age <= 0:
+        return latest_snapshots
+
+    comparison_snapshots = load_market_snapshots_at_or_before(connection, reference_fetched_at - baseline_min_age)
+    for market_id, latest_snapshot in latest_snapshots.items():
+        comparison_snapshots.setdefault(market_id, latest_snapshot)
+    return comparison_snapshots
+
+
 def persist_snapshots(connection: sqlite3.Connection, events: dict[str, EventState]) -> None:
     event_rows: list[tuple[Any, ...]] = []
     market_rows: list[tuple[Any, ...]] = []
@@ -1077,8 +1170,16 @@ def run_cycle(connection: sqlite3.Connection, args: argparse.Namespace, rules: d
         min_liquidity=args.min_liquidity,
         min_volume_24h=args.min_volume_24h,
     )
-    previous_events = load_latest_event_snapshots(connection)
-    previous_markets = load_latest_market_snapshots(connection)
+    previous_events = load_comparison_event_snapshots(
+        connection=connection,
+        reference_fetched_at=fetched_at,
+        baseline_min_age=args.baseline_min_age,
+    )
+    previous_markets = load_comparison_market_snapshots(
+        connection=connection,
+        reference_fetched_at=fetched_at,
+        baseline_min_age=args.baseline_min_age,
+    )
     had_baseline = bool(previous_events and previous_markets)
     signals = detect_signals(events, previous_events, previous_markets, rules)
     persist_snapshots(connection, events)
@@ -1125,6 +1226,8 @@ def write_launchd_plist(
         str(telegram_env_path),
         "--interval",
         str(args.interval),
+        "--baseline-min-age",
+        str(args.baseline_min_age),
         "--top",
         str(args.top),
         "--limit-per-page",
@@ -1190,6 +1293,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--limit-per-page debe estar entre 1 y 100.")
     if args.notification_cooldown < 0:
         parser.error("--notification-cooldown no puede ser negativo.")
+    if args.baseline_min_age < 0:
+        parser.error("--baseline-min-age no puede ser negativo.")
     if args.log_max_mb <= 0:
         parser.error("--log-max-mb debe ser mayor que 0.")
     if args.log_backups < 0:

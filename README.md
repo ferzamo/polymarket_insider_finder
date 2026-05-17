@@ -16,6 +16,7 @@ No prueba insider trading. Solo marca anomalías que merecen revisión manual.
 5. Aplica perfiles distintos por `feeType` y por banda de liquidez para ajustar sensibilidad.
 6. Agrupa por evento porque el `openInterest` público de Gamma viene a nivel de evento, no de pregunta individual.
 7. Dentro de cada evento, selecciona la pregunta binaria con el mayor movimiento de precio para representar la señal.
+8. Compara contra un baseline con lookback configurable. Por defecto intenta medir contra un snapshot de hace `300` segundos y, si todavía no existe, cae al último guardado para no quedarse ciego al arrancar.
 
 ## Recomendación de frecuencia
 
@@ -45,10 +46,13 @@ Ajustar sensibilidad:
 python3 polymarket_insider_finder.py \
   --watch \
   --interval 60 \
+  --baseline-min-age 300 \
   --min-oi-abs 8000 \
   --min-oi-pct 0.05 \
   --min-price-move 0.08
 ```
+
+Si quieres el comportamiento anterior, pegado al último snapshot disponible, puedes fijar `--baseline-min-age 0`.
 
 Monitor como servicio con logs rotativos:
 

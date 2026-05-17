@@ -22,8 +22,10 @@ from polymarket_insider_finder import fetch_json
 from polymarket_insider_finder import hydrate_telegram_credentials
 from polymarket_insider_finder import load_simple_env_file
 from polymarket_insider_finder import parse_yes_no_prices
+from polymarket_insider_finder import persist_snapshots
 from polymarket_insider_finder import record_sent_alert
 from polymarket_insider_finder import resolve_thresholds
+from polymarket_insider_finder import run_cycle
 from polymarket_insider_finder import should_send_alert
 
 
@@ -306,6 +308,116 @@ class SignalTests(unittest.TestCase):
         record_sent_alert(connection, signal_now)
         self.assertFalse(should_send_alert(connection, signal_now, 1800))
         self.assertTrue(should_send_alert(connection, signal_later, 1800))
+
+        connection.close()
+
+    def test_run_cycle_uses_older_baseline_when_available(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        ensure_db(connection)
+
+        older_event = EventState(
+            event_id="event-1",
+            title="Election",
+            slug="election",
+            open_interest=10000.0,
+            fetched_at=100,
+            markets=[
+                MarketSnapshot(
+                    market_id="m1",
+                    event_id="event-1",
+                    event_title="Election",
+                    event_slug="election",
+                    question="Will X win?",
+                    slug="x-win",
+                    condition_id="cond-1",
+                    yes_price=0.40,
+                    no_price=0.60,
+                    liquidity=10000.0,
+                    volume_24h=3000.0,
+                    event_open_interest=10000.0,
+                    fee_type="general_fees",
+                    fetched_at=100,
+                )
+            ],
+        )
+        recent_event = EventState(
+            event_id="event-1",
+            title="Election",
+            slug="election",
+            open_interest=10800.0,
+            fetched_at=260,
+            markets=[
+                MarketSnapshot(
+                    market_id="m1",
+                    event_id="event-1",
+                    event_title="Election",
+                    event_slug="election",
+                    question="Will X win?",
+                    slug="x-win",
+                    condition_id="cond-1",
+                    yes_price=0.45,
+                    no_price=0.55,
+                    liquidity=10000.0,
+                    volume_24h=3000.0,
+                    event_open_interest=10800.0,
+                    fee_type="general_fees",
+                    fetched_at=260,
+                )
+            ],
+        )
+        persist_snapshots(connection, {older_event.event_id: older_event})
+        persist_snapshots(connection, {recent_event.event_id: recent_event})
+
+        args = argparse.Namespace(
+            limit_per_page=100,
+            max_pages=1,
+            min_liquidity=0.0,
+            min_volume_24h=0.0,
+            top=10,
+            baseline_min_age=300,
+        )
+
+        current_markets = [
+            {
+                "id": "m1",
+                "question": "Will X win?",
+                "slug": "x-win",
+                "conditionId": "cond-1",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.50", "0.50"]',
+                "liquidityNum": 10000,
+                "volume24hr": 3000,
+                "feeType": "general_fees",
+                "events": [
+                    {
+                        "id": "event-1",
+                        "title": "Election",
+                        "slug": "election",
+                        "openInterest": 12000,
+                    }
+                ],
+            }
+        ]
+
+        custom_rules = {
+            "defaults": {
+                "min_oi_abs": 1000.0,
+                "min_oi_pct": 0.1,
+                "min_price_move": 0.08,
+            },
+            "fee_type_profiles": {},
+            "liquidity_bands": [],
+        }
+
+        with patch("polymarket_insider_finder.time.time", return_value=400):
+            with patch("polymarket_insider_finder.iter_active_markets", return_value=current_markets):
+                result = run_cycle(connection, args, custom_rules)
+
+        self.assertTrue(result.had_baseline)
+        self.assertEqual(len(result.signals), 1)
+        self.assertEqual(result.signals[0].market_id, "m1")
+        self.assertEqual(result.signals[0].interval_seconds, 300)
+        self.assertAlmostEqual(result.signals[0].price_move, 0.10)
 
         connection.close()
 
