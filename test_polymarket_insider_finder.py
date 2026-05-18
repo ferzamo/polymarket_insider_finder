@@ -302,6 +302,98 @@ class SignalTests(unittest.TestCase):
         self.assertEqual(set(events), {"news-event"})
         self.assertEqual(events["news-event"].markets[0].market_id, "news-market")
 
+    def test_build_event_states_excludes_crypto_category(self) -> None:
+        raw_markets = [
+            {
+                "id": "crypto-market",
+                "question": "Will it keep rising?",
+                "slug": "keep-rising",
+                "conditionId": "cond-crypto",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.51", "0.49"]',
+                "liquidityNum": 5000,
+                "volume24hr": 1500,
+                "feeType": "general_fees",
+                "events": [
+                    {
+                        "id": "crypto-event",
+                        "title": "Asset Outlook",
+                        "slug": "asset-outlook",
+                        "category": "Crypto",
+                        "openInterest": 25000,
+                    }
+                ],
+            },
+            {
+                "id": "news-market",
+                "question": "Will Candidate X win?",
+                "slug": "candidate-x-win",
+                "conditionId": "cond-news",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.64", "0.36"]',
+                "liquidityNum": 5000,
+                "volume24hr": 1500,
+                "feeType": "general_fees",
+                "events": [
+                    {
+                        "id": "news-event",
+                        "title": "Election",
+                        "slug": "election",
+                        "category": "Politics",
+                        "openInterest": 40000,
+                    }
+                ],
+            },
+        ]
+
+        events, binary_market_count = build_event_states(
+            raw_markets=raw_markets,
+            fetched_at=200,
+            min_liquidity=0.0,
+            min_volume_24h=0.0,
+        )
+
+        self.assertEqual(binary_market_count, 1)
+        self.assertEqual(set(events), {"news-event"})
+        self.assertEqual(events["news-event"].markets[0].market_id, "news-market")
+
+    def test_detect_signals_ignores_terminal_price_moves(self) -> None:
+        event = EventState(
+            event_id="event-1",
+            title="Tweet Count",
+            slug="tweet-count",
+            open_interest=120000.0,
+            fetched_at=200,
+            markets=[
+                MarketSnapshot(
+                    market_id="m1",
+                    event_id="event-1",
+                    event_title="Tweet Count",
+                    event_slug="tweet-count",
+                    question="Will Elon post 40-64 tweets?",
+                    slug="elon-tweets",
+                    condition_id="cond-1",
+                    yes_price=0.0,
+                    no_price=1.0,
+                    liquidity=159400.0,
+                    volume_24h=263900.0,
+                    event_open_interest=120000.0,
+                    fee_type="culture_fees",
+                    fetched_at=200,
+                )
+            ],
+        )
+        previous_events = {
+            "event-1": EventSnapshotRecord("event-1", 100, 100000.0),
+        }
+        previous_markets = {
+            "m1": MarketSnapshotRecord("m1", 100, 0.054, 0.946),
+        }
+
+        signals = detect_signals({"event-1": event}, previous_events, previous_markets, DEFAULT_RULES)
+
+        self.assertEqual(signals, [])
+
     def test_alert_cooldown_deduplicates_market_direction(self) -> None:
         connection = sqlite3.connect(":memory:")
         ensure_db(connection)

@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import plistlib
+import re
 import sqlite3
 import sys
 import time
@@ -32,6 +33,32 @@ DEFAULT_LOG_PATH = Path("logs/polymarket_insider_finder.log")
 DEFAULT_LAUNCHD_PLIST_PATH = Path("launchd/com.fernandozamora.polymarket-insider-finder.plist")
 DEFAULT_BASELINE_MIN_AGE_SECONDS = 300
 EXCLUDED_FEE_TYPES = frozenset({"sports_fees_v2"})
+EXCLUDED_MARKET_CATEGORIES = frozenset({"crypto"})
+TERMINAL_PRICE_EPSILON = 0.0005
+CRYPTO_MARKET_PATTERNS = (
+    re.compile(r"\bcrypto\b", re.IGNORECASE),
+    re.compile(r"\bbitcoin\b", re.IGNORECASE),
+    re.compile(r"\bbtc\b", re.IGNORECASE),
+    re.compile(r"\bethereum\b", re.IGNORECASE),
+    re.compile(r"\beth\b", re.IGNORECASE),
+    re.compile(r"\bsolana\b", re.IGNORECASE),
+    re.compile(r"\bdoge(?:coin)?\b", re.IGNORECASE),
+    re.compile(r"\bxrp\b", re.IGNORECASE),
+    re.compile(r"\bripple\b", re.IGNORECASE),
+    re.compile(r"\bcardano\b", re.IGNORECASE),
+    re.compile(r"\bada\b", re.IGNORECASE),
+    re.compile(r"\blitecoin\b", re.IGNORECASE),
+    re.compile(r"\bltc\b", re.IGNORECASE),
+    re.compile(r"\bbinance\b", re.IGNORECASE),
+    re.compile(r"\bbnb\b", re.IGNORECASE),
+    re.compile(r"\bavalanche\b", re.IGNORECASE),
+    re.compile(r"\bavax\b", re.IGNORECASE),
+    re.compile(r"\btron\b", re.IGNORECASE),
+    re.compile(r"\btrx\b", re.IGNORECASE),
+    re.compile(r"\bshiba\b", re.IGNORECASE),
+    re.compile(r"\bshib\b", re.IGNORECASE),
+    re.compile(r"\bsui\b", re.IGNORECASE),
+)
 DEFAULT_RULES = {
     "defaults": {
         "min_oi_abs": 5000.0,
@@ -542,11 +569,81 @@ def parse_yes_no_prices(market: dict[str, Any]) -> tuple[float, float] | None:
     return mapping["yes"], mapping["no"]
 
 
-def extract_market_snapshot(raw_market: dict[str, Any], fetched_at: int) -> MarketSnapshot | None:
+def get_primary_event(raw_market: dict[str, Any]) -> dict[str, Any] | None:
     event_list = raw_market.get("events") or []
     if not event_list:
         return None
+
     event = event_list[0]
+    return event if isinstance(event, dict) else None
+
+
+def normalize_market_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def extract_market_category(raw_market: dict[str, Any]) -> str:
+    event = get_primary_event(raw_market)
+    candidates = [raw_market.get("category")]
+    if event is not None:
+        candidates.append(event.get("category"))
+
+    for candidate in candidates:
+        normalized = normalize_market_text(candidate)
+        if normalized:
+            return normalized
+
+    return ""
+
+
+def build_market_search_text(raw_market: dict[str, Any]) -> str:
+    event = get_primary_event(raw_market)
+    text_parts = [
+        raw_market.get("question"),
+        raw_market.get("slug"),
+        raw_market.get("category"),
+    ]
+    if event is not None:
+        text_parts.extend(
+            [
+                event.get("title"),
+                event.get("slug"),
+                event.get("category"),
+            ]
+        )
+
+    tags = raw_market.get("tags")
+    parsed_tags = parse_json_array(tags) if isinstance(tags, str) else tags
+    if isinstance(parsed_tags, list):
+        for tag in parsed_tags:
+            if isinstance(tag, str):
+                text_parts.append(tag)
+            elif isinstance(tag, dict):
+                text_parts.extend([tag.get("label"), tag.get("slug"), tag.get("name")])
+
+    return " ".join(filter(None, (normalize_market_text(part) for part in text_parts)))
+
+
+def is_crypto_market(raw_market: dict[str, Any]) -> bool:
+    if extract_market_category(raw_market) in EXCLUDED_MARKET_CATEGORIES:
+        return True
+
+    haystack = build_market_search_text(raw_market)
+    return any(pattern.search(haystack) for pattern in CRYPTO_MARKET_PATTERNS)
+
+
+def is_terminal_probability(price: float) -> bool:
+    return price <= TERMINAL_PRICE_EPSILON or price >= 1.0 - TERMINAL_PRICE_EPSILON
+
+
+def is_effectively_resolved_market(market: MarketSnapshot) -> bool:
+    return is_terminal_probability(market.yes_price) or is_terminal_probability(market.no_price)
+
+
+def extract_market_snapshot(raw_market: dict[str, Any], fetched_at: int) -> MarketSnapshot | None:
+    event = get_primary_event(raw_market)
+    if event is None:
+        return None
     yes_no_prices = parse_yes_no_prices(raw_market)
     if yes_no_prices is None:
         return None
@@ -585,6 +682,8 @@ def build_event_states(
     binary_market_count = 0
 
     for raw_market in raw_markets:
+        if is_crypto_market(raw_market):
+            continue
         snapshot = extract_market_snapshot(raw_market, fetched_at)
         if snapshot is None:
             continue
@@ -942,6 +1041,8 @@ def detect_signals(
         for market in event.markets:
             previous_market = previous_markets.get(market.market_id)
             if previous_market is None:
+                continue
+            if is_effectively_resolved_market(market):
                 continue
 
             thresholds = resolve_thresholds(rules, market)

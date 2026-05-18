@@ -13,10 +13,12 @@ No prueba insider trading. Solo marca anomalías que merecen revisión manual.
 2. Se queda solo con mercados binarios `Yes/No`.
 3. Guarda snapshots en SQLite para comparar cada iteración con la anterior.
 4. Excluye los mercados deportivos identificados como `sports_fees_v2`, para que no generen señales ni alertas.
-5. Aplica perfiles distintos por `feeType` y por banda de liquidez para ajustar sensibilidad.
-6. Agrupa por evento porque el `openInterest` público de Gamma viene a nivel de evento, no de pregunta individual.
-7. Dentro de cada evento, selecciona la pregunta binaria con el mayor movimiento de precio para representar la señal.
-8. Compara contra un baseline con lookback configurable. Por defecto intenta medir contra un snapshot de hace `300` segundos y, si todavía no existe, cae al último guardado para no quedarse ciego al arrancar.
+5. Excluye también mercados de cripto usando `category` cuando Gamma lo trae y, como respaldo, palabras clave en título, pregunta y slug.
+6. Ignora movimientos que terminan en probabilidad terminal (`0.000` o `1.000`) para no marcar cierres o resoluciones mecánicas como si fueran señales de insider.
+7. Aplica perfiles distintos por `feeType` y por banda de liquidez para ajustar sensibilidad.
+8. Agrupa por evento porque el `openInterest` público de Gamma viene a nivel de evento, no de pregunta individual.
+9. Dentro de cada evento, selecciona la pregunta binaria con el mayor movimiento de precio para representar la señal.
+10. Compara contra un baseline con lookback configurable. Por defecto intenta medir contra un snapshot de hace `300` segundos y, si todavía no existe, cae al último guardado para no quedarse ciego al arrancar.
 
 ## Recomendación de frecuencia
 
@@ -234,4 +236,4 @@ El mismo SQLite también guarda el historial de alertas enviadas para no repetir
 
 La API pública de Gamma expone `openInterest` en el objeto `event`. Eso significa que, en eventos con varias preguntas, la señal de capital fresco se detecta a nivel del evento y luego se asocia a la pregunta binaria con mayor desplazamiento de precio. Es una aproximación útil, pero no una prueba forense por mercado.
 
-Además, Gamma no expone una categoría de mercado limpia y consistente en estos endpoints públicos, así que el ajuste por "categoría" se hace usando `feeType` como proxy operativo. Por eso los mercados con `feeType` `sports_fees_v2` se excluyen por completo del análisis.
+Para los filtros, el bot sigue excluyendo deporte por `feeType` (`sports_fees_v2`). En cripto intenta usar `category` cuando el payload lo trae y, si ese dato no viene limpio, cae a coincidencias por texto como respaldo.
