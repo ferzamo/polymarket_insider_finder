@@ -1,5 +1,7 @@
-data/
-logs/
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
 config/deploy.env
 config/telegram.env
-ssh-key-2026-05-16.key
+ssh-key-*.key
