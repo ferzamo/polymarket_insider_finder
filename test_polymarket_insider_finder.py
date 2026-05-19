@@ -15,10 +15,12 @@ from polymarket_insider_finder import EventState
 from polymarket_insider_finder import MarketSnapshot
 from polymarket_insider_finder import MarketSnapshotRecord
 from polymarket_insider_finder import Signal
+from polymarket_insider_finder import attach_candidate_insider_accounts
 from polymarket_insider_finder import build_telegram_digest
 from polymarket_insider_finder import build_event_states
 from polymarket_insider_finder import detect_signals
 from polymarket_insider_finder import ensure_db
+from polymarket_insider_finder import extract_polymarket_username_from_profile_html
 from polymarket_insider_finder import fetch_json
 from polymarket_insider_finder import hydrate_telegram_credentials
 from polymarket_insider_finder import load_simple_env_file
@@ -141,6 +143,8 @@ class TelegramDigestTests(unittest.TestCase):
             interval_seconds=60,
             strength=0.88,
             fetched_at=1_747_483_200,
+            candidate_insider_account="0x1234567890abcdef1234567890abcdef12345678",
+            candidate_insider_username="icarodonte",
         )
 
         digest = build_telegram_digest([signal])
@@ -153,6 +157,10 @@ class TelegramDigestTests(unittest.TestCase):
         self.assertIn("<b>Interes abierto:</b> $76.0K | <b>Cambio:</b> +$12.0K (+18.8%)", digest)
         self.assertIn("<b>Liquidez:</b> $15.0K | <b>Vol 24h:</b> $8.2K", digest)
         self.assertIn("<b>Perfil:</b> general_fees/liquidity:deep | <b>Intervalo analizado:</b> 60s", digest)
+        self.assertIn(
+            "<b>Cuenta candidata:</b> @icarodonte",
+            digest,
+        )
         self.assertIn('<a href="https://polymarket.com/event/election-2026">Abrir mercado</a>', digest)
 
     def test_send_telegram_message_uses_html_parse_mode(self) -> None:
@@ -166,6 +174,103 @@ class TelegramDigestTests(unittest.TestCase):
 
 
 class SignalTests(unittest.TestCase):
+    def test_extract_polymarket_username_from_profile_html(self) -> None:
+        profile_html = (
+            '<script>'
+            '{"proxyAddress":"0xc0cd961f2c4758a200b994c7eee2f835b702850b","username":"icarodonte"}'
+            '</script>'
+        )
+
+        username = extract_polymarket_username_from_profile_html(
+            profile_html,
+            "0xc0cd961f2c4758a200b994c7eee2f835b702850b",
+        )
+
+        self.assertEqual(username, "icarodonte")
+
+    def test_attach_candidate_insider_accounts_prefers_recent_buy_on_signal_side(self) -> None:
+        signal = Signal(
+            event_id="event-1",
+            event_title="Election",
+            event_slug="election",
+            market_id="m1",
+            question="Will X win?",
+            slug="x-win",
+            direction="YES",
+            previous_side_price=0.61,
+            current_side_price=0.72,
+            price_move=0.11,
+            previous_yes_price=0.61,
+            current_yes_price=0.72,
+            oi_delta_abs=20000.0,
+            oi_delta_pct=0.2,
+            current_open_interest=120000.0,
+            market_liquidity=10000.0,
+            market_volume_24h=3000.0,
+            market_fee_type="general_fees",
+            threshold_profile_name="defaults + general_fees + liq:mid",
+            interval_seconds=60,
+            strength=0.5,
+            fetched_at=200,
+            condition_id="0x1111111111111111111111111111111111111111111111111111111111111111",
+        )
+
+        trades = [
+            {
+                "proxyWallet": "0x1111111111111111111111111111111111111111",
+                "side": "BUY",
+                "outcome": "Yes",
+                "size": 100.0,
+                "price": 0.45,
+                "timestamp": 50,
+            },
+            {
+                "proxyWallet": "0x2222222222222222222222222222222222222222",
+                "side": "BUY",
+                "outcome": "Yes",
+                "size": 5.0,
+                "price": 0.50,
+                "timestamp": 170,
+            },
+            {
+                "proxyWallet": "0x3333333333333333333333333333333333333333",
+                "side": "BUY",
+                "outcome": "Yes",
+                "size": 20.0,
+                "price": 0.60,
+                "timestamp": 180,
+            },
+            {
+                "proxyWallet": "0x4444444444444444444444444444444444444444",
+                "side": "BUY",
+                "outcome": "No",
+                "size": 1000.0,
+                "price": 0.90,
+                "timestamp": 190,
+            },
+            {
+                "proxyWallet": "0x5555555555555555555555555555555555555555",
+                "side": "SELL",
+                "outcome": "Yes",
+                "size": 100.0,
+                "price": 0.70,
+                "timestamp": 195,
+            },
+        ]
+
+        with patch("polymarket_insider_finder.fetch_json", return_value=trades):
+            with patch(
+                "polymarket_insider_finder.fetch_polymarket_profile_html",
+                return_value=(
+                    '<script>{"proxyAddress":"0x3333333333333333333333333333333333333333",'
+                    '"username":"big-whale"}</script>'
+                ),
+            ):
+                enriched_signals = attach_candidate_insider_accounts([signal])
+
+        self.assertEqual(enriched_signals[0].candidate_insider_account, "0x3333333333333333333333333333333333333333")
+        self.assertEqual(enriched_signals[0].candidate_insider_username, "big-whale")
+
     def test_detect_signals_picks_aggressive_market(self) -> None:
         event = EventState(
             event_id="event-1",

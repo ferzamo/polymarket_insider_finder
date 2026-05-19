@@ -14,7 +14,7 @@ import sqlite3
 import sys
 import time
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from logging.handlers import RotatingFileHandler
@@ -26,12 +26,16 @@ from urllib.request import Request, urlopen
 
 
 GAMMA_KEYSET_URL = "https://gamma-api.polymarket.com/markets/keyset"
+POLYMARKET_TRADES_URL = "https://data-api.polymarket.com/trades"
+POLYMARKET_PROFILE_URL_TEMPLATE = "https://polymarket.com/profile/{address}"
 DEFAULT_DB_PATH = Path("data/polymarket_insider.sqlite3")
 DEFAULT_RULES_PATH = Path("config/signal_rules.json")
 DEFAULT_TELEGRAM_ENV_PATH = Path("config/telegram.env")
 DEFAULT_LOG_PATH = Path("logs/polymarket_insider_finder.log")
 DEFAULT_LAUNCHD_PLIST_PATH = Path("launchd/com.fernandozamora.polymarket-insider-finder.plist")
 DEFAULT_BASELINE_MIN_AGE_SECONDS = 300
+TRADE_LOOKUP_LIMIT = 50
+TRADE_LOOKBACK_GRACE_SECONDS = 60
 EXCLUDED_FEE_TYPES = frozenset({"sports_fees_v2"})
 EXCLUDED_MARKET_CATEGORIES = frozenset({"crypto"})
 TERMINAL_PRICE_EPSILON = 0.0005
@@ -193,6 +197,9 @@ class Signal:
     interval_seconds: int
     strength: float
     fetched_at: int
+    condition_id: str = ""
+    candidate_insider_account: str = ""
+    candidate_insider_username: str = ""
 
 
 @dataclass(frozen=True)
@@ -580,6 +587,23 @@ def get_primary_event(raw_market: dict[str, Any]) -> dict[str, Any] | None:
 
 def normalize_market_text(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def normalize_binary_outcome_label(value: Any) -> str:
+    normalized = normalize_market_text(value)
+    if normalized == "yes":
+        return "YES"
+    if normalized == "no":
+        return "NO"
+    return ""
+
+
+def is_condition_id(value: str) -> bool:
+    return bool(re.fullmatch(r"0x[a-fA-F0-9]{64}", value.strip()))
+
+
+def is_wallet_address(value: str) -> bool:
+    return bool(re.fullmatch(r"0x[a-fA-F0-9]{40}", value.strip()))
 
 
 def extract_market_category(raw_market: dict[str, Any]) -> str:
@@ -1021,6 +1045,137 @@ def calculate_signal_strength(price_move: float, oi_delta_abs: float, oi_delta_p
     return price_move * max(oi_delta_pct, 0.0) * math.log1p(max(oi_delta_abs, 0.0))
 
 
+def fetch_recent_condition_trades(condition_id: str, limit: int = TRADE_LOOKUP_LIMIT) -> list[dict[str, Any]]:
+    if not is_condition_id(condition_id):
+        return []
+
+    payload = fetch_json(POLYMARKET_TRADES_URL, {"conditionId": condition_id, "limit": limit})
+    if not isinstance(payload, list):
+        return []
+    return [trade for trade in payload if isinstance(trade, dict)]
+
+
+def select_candidate_insider_account(signal: Signal, trades: list[dict[str, Any]]) -> str:
+    target_outcome = signal.direction.upper()
+    window_start = max(0, signal.fetched_at - signal.interval_seconds - TRADE_LOOKBACK_GRACE_SECONDS)
+    window_end = signal.fetched_at + TRADE_LOOKBACK_GRACE_SECONDS
+    ranked_candidates: list[tuple[bool, bool, float, int, str]] = []
+
+    for trade in trades:
+        wallet = str(trade.get("proxyWallet") or trade.get("makerAddress") or "").strip()
+        if not wallet:
+            continue
+        if normalize_binary_outcome_label(trade.get("outcome")) != target_outcome:
+            continue
+
+        timestamp = int(safe_float(trade.get("timestamp")))
+        in_window = window_start <= timestamp <= window_end if timestamp else False
+        is_buy = normalize_market_text(trade.get("side")) == "buy"
+        notional = safe_float(trade.get("size")) * max(0.0, safe_float(trade.get("price")))
+        ranked_candidates.append((in_window, is_buy, notional, timestamp, wallet))
+
+    if not ranked_candidates:
+        return ""
+
+    ranked_candidates.sort(key=lambda candidate: (candidate[0], candidate[1], candidate[2], candidate[3]), reverse=True)
+    return ranked_candidates[0][4]
+
+
+def fetch_polymarket_profile_html(account: str) -> str:
+    if not is_wallet_address(account):
+        return ""
+
+    request = Request(
+        POLYMARKET_PROFILE_URL_TEMPLATE.format(address=account),
+        headers=HTTP_HEADERS,
+    )
+    with urlopen(request, timeout=30) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset, errors="replace")
+
+
+def extract_polymarket_username_from_profile_html(profile_html: str, account: str) -> str:
+    if not profile_html or not is_wallet_address(account):
+        return ""
+
+    profile_html_lower = profile_html.lower()
+    account_lower = account.lower()
+    anchor = profile_html_lower.find(f'"proxyAddress":"{account_lower}"')
+    if anchor == -1:
+        anchor = profile_html_lower.find(account_lower)
+    if anchor == -1:
+        return ""
+
+    window = profile_html[anchor : anchor + 2000]
+    match = re.search(r'"username":"((?:\\.|[^\"])*)"', window)
+    if match is None:
+        return ""
+
+    try:
+        return str(json.loads(f'"{match.group(1)}"')).strip()
+    except json.JSONDecodeError:
+        return match.group(1).strip()
+
+
+def resolve_polymarket_username(account: str) -> str:
+    if not is_wallet_address(account):
+        return ""
+
+    profile_html = fetch_polymarket_profile_html(account)
+    return extract_polymarket_username_from_profile_html(profile_html, account)
+
+
+def attach_candidate_insider_accounts(signals: list[Signal]) -> list[Signal]:
+    if not signals:
+        return []
+
+    logger = logging.getLogger("polymarket_insider_finder")
+    trade_cache: dict[str, list[dict[str, Any]]] = {}
+    username_cache: dict[str, str] = {}
+    enriched_signals: list[Signal] = []
+
+    for signal in signals:
+        trades = trade_cache.get(signal.condition_id)
+        if trades is None:
+            try:
+                trades = fetch_recent_condition_trades(signal.condition_id)
+            except Exception as exc:
+                logger.warning(
+                    "No se pudieron cargar trades recientes para market_id=%s condition_id=%s: %s",
+                    signal.market_id,
+                    signal.condition_id,
+                    exc,
+                )
+                trades = []
+            trade_cache[signal.condition_id] = trades
+
+        candidate_account = select_candidate_insider_account(signal, trades)
+        candidate_username = ""
+        if candidate_account:
+            candidate_username = username_cache.get(candidate_account, "")
+            if candidate_account not in username_cache:
+                try:
+                    candidate_username = resolve_polymarket_username(candidate_account)
+                except Exception as exc:
+                    logger.warning(
+                        "No se pudo resolver el usuario de Polymarket para account=%s: %s",
+                        candidate_account,
+                        exc,
+                    )
+                    candidate_username = ""
+                username_cache[candidate_account] = candidate_username
+
+        enriched_signals.append(
+            replace(
+                signal,
+                candidate_insider_account=candidate_account,
+                candidate_insider_username=candidate_username,
+            )
+        )
+
+    return enriched_signals
+
+
 def detect_signals(
     events: dict[str, EventState],
     previous_events: dict[str, EventSnapshotRecord],
@@ -1094,6 +1249,7 @@ def detect_signals(
                 interval_seconds=interval_seconds,
                 strength=strength,
                 fetched_at=market.fetched_at,
+                condition_id=market.condition_id,
             )
 
             if best_signal is None or candidate.strength > best_signal.strength:
@@ -1148,7 +1304,18 @@ def render_signals(
         )
         lines.append(f"   Evento: {signal.event_title}")
         lines.append(f"   Perfil: {signal.threshold_profile_name}")
+        lines.append(f"   Cuenta candidata: {format_candidate_identity(signal)}")
     return "\n".join(lines)
+
+
+def format_candidate_identity(signal: Signal) -> str:
+    if signal.candidate_insider_username:
+        return f"@{signal.candidate_insider_username}"
+    if signal.candidate_insider_username:
+        return f"@{signal.candidate_insider_username}"
+    if signal.candidate_insider_account:
+        return signal.candidate_insider_account
+    return "no disponible"
 
 
 def signal_alert_key(signal: Signal) -> str:
@@ -1222,6 +1389,14 @@ def build_telegram_digest(signals: list[Signal]) -> str:
         lines.append(
             f"<b>Perfil:</b> {html_escape(signal.threshold_profile_name)} | <b>Intervalo analizado:</b> {signal.interval_seconds}s"
         )
+        if signal.candidate_insider_username:
+            lines.append(f"<b>Cuenta candidata:</b> @{html_escape(signal.candidate_insider_username)}")
+        elif signal.candidate_insider_account:
+            lines.append(
+                f"<b>Cuenta candidata:</b> <code>{html_escape(signal.candidate_insider_account)}</code>"
+            )
+        else:
+            lines.append("<b>Cuenta candidata:</b> no disponible")
         lines.append(f"<a href=\"{html_escape(market_url(signal), quote=True)}\">Abrir mercado</a>")
         lines.append("")
     return "\n".join(lines).strip()
@@ -1290,7 +1465,7 @@ def run_cycle(connection: sqlite3.Connection, args: argparse.Namespace, rules: d
         baseline_min_age=args.baseline_min_age,
     )
     had_baseline = bool(previous_events and previous_markets)
-    signals = detect_signals(events, previous_events, previous_markets, rules)
+    signals = attach_candidate_insider_accounts(detect_signals(events, previous_events, previous_markets, rules))
     persist_snapshots(connection, events)
     summary_text = render_signals(
         signals=signals,

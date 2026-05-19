@@ -19,6 +19,7 @@ No prueba insider trading. Solo marca anomalías que merecen revisión manual.
 8. Agrupa por evento porque el `openInterest` público de Gamma viene a nivel de evento, no de pregunta individual.
 9. Dentro de cada evento, selecciona la pregunta binaria con el mayor movimiento de precio para representar la señal.
 10. Compara contra un baseline con lookback configurable. Por defecto intenta medir contra un snapshot de hace `300` segundos y, si todavía no existe, cae al último guardado para no quedarse ciego al arrancar.
+11. Cuando detecta una señal, consulta los trades recientes del `conditionId`, intenta resolver el perfil público de esa wallet en Polymarket y muestra `@usuario` cuando existe; si no, usa la wallet como fallback.
 
 ## Recomendación de frecuencia
 
@@ -212,6 +213,8 @@ POLYMARKET_TELEGRAM_CHAT_ID=tu_chat_id
 `config/telegram.env` no se sube a Git.
 
 El sistema deduplica alertas por mercado y dirección (`YES` o `NO`) usando un cooldown configurable con `--notification-cooldown`.
+
+La `Cuenta candidata` es una heurística operativa, no una prueba forense: intenta asociar la señal con la compra reciente de mayor tamaño en el mismo lado (`YES` o `NO`) dentro de la ventana analizada. Si la wallet tiene perfil público, el bot enseña el `@usuario` de Polymarket; si no, deja la dirección.
 
 ## Servicio y logs
 
